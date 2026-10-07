@@ -21,7 +21,7 @@ python3 -c "import main; print(main.get_users(None))"
 
 `functions/hello` (`hello_world`) and `functions/stats` (`get_stats`) work the same way.
 
-Deploying to GCP (not verified in this cleanup: needs a billed GCP project, and the original project and bucket are gone or inaccessible to me). Enable the Cloud Functions, API Gateway and Deployment Manager APIs, then from the repo root:
+Deploying to GCP (not verified in this cleanup: needs a billed GCP project, which was not available). Enable the Cloud Functions, API Gateway and Deployment Manager APIs, then from the repo root:
 
 ```bash
 gcloud functions deploy hello_world --runtime python311 --trigger-http --entry-point hello_world \
