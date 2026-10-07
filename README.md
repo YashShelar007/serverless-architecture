@@ -1,210 +1,64 @@
-# Serverless REST API on Google Cloud Functions
+# serverless-architecture
 
-A minimal Serverless REST API with three endpoints (`/hello`, `/users`, `/stats`) built using:
+A three-endpoint REST API (`/hello`, `/users`, `/stats`) on Google Cloud Functions (1st gen), fronted by API Gateway, with one function also described in a Deployment Manager config. It shows the smallest working path from function code to a single public base URL on GCP.
 
-- **Google Cloud Functions (1st-gen)**
-- **API Gateway**
-- **Deployment Manager** (IaC for automation)
+## What it does not do
 
----
+- No database or state. Every response is hard-coded.
+- No authentication. The functions are deployed with `--allow-unauthenticated` and the gateway spec defines no security scheme.
+- No tests and no CI.
+- Deployment Manager covers only `hello_world`; the other two functions are deployed with `gcloud`.
 
-## Project Structure
+## Quickstart
 
-```
-
-serverless-api/
-│
-├── functions/
-│   ├── hello/          # Code for /hello endpoint
-│   │   ├── main.py
-│   │   └── requirements.txt
-│   │
-│   ├── users/          # Code for /users endpoint
-│   │   ├── main.py
-│   │   └── requirements.txt
-│   │
-│   └── stats/          # Code for /stats endpoint
-│       ├── main.py
-│       └── requirements.txt
-│
-├── apigateway/
-│   └── api-config.yaml # OpenAPI spec for API Gateway
-│
-├── deployment-manager/
-│   └── deployment.yaml # Deployment Manager template for hello\_world
-│
-└── README.md
-
-```
-
----
-
-## Endpoints (Deployed)
-
-1. **GET /hello**  
-   Returns:
-   ```text
-   Hello from Yash’s first GCP function!
-   ```
-
-2. **GET /users**
-   Returns:
-
-   ```json
-   { "users": ["alice", "bob", "carol"] }
-   ```
-
-3. **GET /stats**
-   Returns:
-
-   ```json
-   { "active_users": 23, "uptime": "99.9%" }
-   ```
-
-Once you deploy via API Gateway, all three will live under one base URL:
-
-```
-https://<GATEWAY_ID>-uc.a.run.app
-```
-
-So you can call:
-
-```
-curl https://<GATEWAY_ID>-uc.a.run.app/hello
-curl https://<GATEWAY_ID>-uc.a.run.app/users
-curl https://<GATEWAY_ID>-uc.a.run.app/stats
-```
-
----
-
-## How to Deploy (MVP)
-
-### 1. Prerequisites
-
-* A GCP project with billing enabled (e.g. `YOUR_PROJECT_ID`)
-* GCP APIs enabled:
-
-  * Cloud Functions API
-  * API Gateway API
-  * Cloud Deployment Manager API
-  * (Optional) Cloud Build API
-* Installed and initialized Google Cloud SDK (`gcloud init`)
-
-### 2. Deploy Cloud Functions (1st-gen)
-
-From `serverless-api` root:
+Run a function locally (verified, Python 3, no dependencies):
 
 ```bash
-# 2.1 Deploy hello_world
-gcloud functions deploy hello_world \
-  --runtime python311 \
-  --trigger-http \
-  --entry-point hello_world \
-  --allow-unauthenticated \
-  --region us-central1 \
-  --source=functions/hello \
-  --no-gen2
-
-# 2.2 Deploy get_users
-gcloud functions deploy get_users \
-  --runtime python311 \
-  --trigger-http \
-  --entry-point get_users \
-  --allow-unauthenticated \
-  --region us-central1 \
-  --source=functions/users \
-  --no-gen2
-
-# 2.3 Deploy get_stats
-gcloud functions deploy get_stats \
-  --runtime python311 \
-  --trigger-http \
-  --entry-point get_stats \
-  --allow-unauthenticated \
-  --region us-central1 \
-  --source=functions/stats \
-  --no-gen2
+cd functions/users
+python3 -c "import main; print(main.get_users(None))"
+# ({'users': ['alice', 'bob', 'carol']}, 200)
 ```
 
-*Wait for each deployment to complete. Note each function’s URL.*
+`functions/hello` (`hello_world`) and `functions/stats` (`get_stats`) work the same way.
 
-### 3. Set Up API Gateway
+Deploying to GCP (not verified in this cleanup: needs a billed GCP project, which was not available). Enable the Cloud Functions, API Gateway and Deployment Manager APIs, then from the repo root:
 
-1. Edit `apigateway/api-config.yaml`:
+```bash
+gcloud functions deploy hello_world --runtime python311 --trigger-http --entry-point hello_world \
+  --allow-unauthenticated --region us-central1 --source=functions/hello --no-gen2
+# repeat for get_users (functions/users) and get_stats (functions/stats)
 
-   * Replace `YOUR_PROJECT_ID` in each `address:` field with your real project ID.
+# edit the three address: lines in apigateway/api-config.yaml to your project, then
+gcloud api-gateway apis create serverless-api --project=YOUR_PROJECT_ID
+gcloud api-gateway api-configs create serverless-api-config --api=serverless-api \
+  --openapi-spec=apigateway/api-config.yaml --project=YOUR_PROJECT_ID
+gcloud api-gateway gateways create serverless-gateway --api=serverless-api \
+  --api-config=serverless-api-config --location=us-central1 --project=YOUR_PROJECT_ID
+```
 
-2. Create the API, config, and gateway:
+The gateway prints a default hostname; `GET /hello`, `/users` and `/stats` on it reach the three functions.
 
-   ```bash
-   # 3.1 Create the API resource
-   gcloud api-gateway apis create serverless-api \
-     --project=YOUR_PROJECT_ID
+## How it works
 
-   # 3.2 Create the API config from the OpenAPI spec
-   gcloud api-gateway api-configs create serverless-api-config \
-     --api=serverless-api \
-     --openapi-spec=apigateway/api-config.yaml \
-     --project=YOUR_PROJECT_ID
+```
+client -> API Gateway (Swagger 2.0 spec) -+- /hello -> Cloud Function hello_world
+                                          +- /users -> Cloud Function get_users
+                                          +- /stats -> Cloud Function get_stats
+```
 
-   # 3.3 Create the Gateway to serve that API
-   gcloud api-gateway gateways create serverless-gateway \
-     --api=serverless-api \
-     --api-config=serverless-api-config \
-     --location=us-central1 \
-     --project=YOUR_PROJECT_ID
-   ```
+- `functions/<name>/main.py` holds one HTTP function each. They return a string (`hello_world`) or a dict that the Functions framework serializes as JSON (`get_users`, `get_stats`). Each `requirements.txt` is empty apart from a comment.
+- `apigateway/api-config.yaml` is a Swagger 2.0 spec. Each path uses `x-google-backend` to point at the matching function's `cloudfunctions.net` URL.
+- `deployment-manager/deployment.yaml` declares `hello_world` as a Cloud Functions resource (256 MB, 60 s timeout, source from a Cloud Storage zip). `functions/hello/hello_source.zip` is a copy of that source.
 
-3. Once the gateway is up (it may take \~1–2 minutes), note the “defaultHostname” it prints, e.g.:
+## Status
 
-   ```
-   https://<GATEWAY_ID>-uc.a.run.app
-   ```
+Built in 2025 as a cloud computing project. Archived: no further changes planned.
 
-4. Test each route:
+## Known limits
 
-   ```bash
-   curl https://<GATEWAY_ID>-uc.a.run.app/hello
-   curl https://<GATEWAY_ID>-uc.a.run.app/users
-   curl https://<GATEWAY_ID>-uc.a.run.app/stats
-   ```
+- The spec and the Deployment Manager config contain the original author's project ID (`severless-architecture`, spelled as in the config) and bucket name (`serverless-api-hello-bucket`). Replace both before deploying.
+- Python 3.11 and 1st-gen Cloud Functions were current when this was written. Not checked against today's runtime support.
 
-### 4. (Optional) Automate `hello_world` with Deployment Manager
+## License
 
-To automate just the `hello_world` function:
-
-1. Ensure you have a GCS bucket (replace `YOUR_BUCKET_NAME`):
-
-   ```bash
-   gsutil mb -p YOUR_PROJECT_ID gs://YOUR_BUCKET_NAME
-   ```
-
-2. Zip and upload your function source:
-
-   ```bash
-   cd functions/hello
-   zip -r hello_source.zip main.py requirements.txt
-   gsutil cp hello_source.zip gs://YOUR_BUCKET_NAME/
-   cd ../../
-   ```
-
-3. Edit `deployment-manager/deployment.yaml` and replace:
-
-   * `YOUR_PROJECT_ID`
-   * `YOUR_BUCKET_NAME`
-     in `sourceArchiveUrl: gs://YOUR_BUCKET_NAME/hello_source.zip`
-
-4. Create or update the deployment:
-
-   ```bash
-   gcloud deployment-manager deployments create hello-deployment \
-     --config=deployment-manager/deployment.yaml \
-     --project=YOUR_PROJECT_ID
-
-   # If you modify the code & reupload the zip:
-   gcloud deployment-manager deployments update hello-deployment \
-     --config=deployment-manager/deployment.yaml \
-     --project=YOUR_PROJECT_ID
-   ```
-
----
+MIT, see [LICENSE](LICENSE).
